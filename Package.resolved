@@ -3,11 +3,11 @@
     "pins": [
       {
         "package": "Runestone",
-        "repositoryURL": "https://github.com/simonbs/Runestone",
+        "repositoryURL": "https://github.com/flinteger/Runestone",
         "state": {
-          "branch": null,
-          "revision": "1fad339aab99cf2136ce6bf8c32da3265b2e85e5",
-          "version": "0.5.1"
+          "branch": "main",
+          "revision": "12b9f4211a6371486c745eb831cf55f29c74f1f5",
+          "version": null
         }
       },
       {
@@ -15,8 +15,8 @@
         "repositoryURL": "https://github.com/tree-sitter/tree-sitter",
         "state": {
           "branch": null,
-          "revision": "98be227227af10cc7a269cb3ffb23686c0610b17",
-          "version": "0.20.9"
+          "revision": "534c4a074cd461ab30d1c8a54bf733d3050221a0",
+          "version": "0.26.6"
         }
       }
     ]
