@@ -1,6 +1,8 @@
-#include <tree_sitter/parser.h>
+#include "tree_sitter/parser.h"
 #include <string.h>
 #include <wctype.h>
+
+#define TOKEN_COUNT 33
 
 enum TokenType {
     BLOCK_COMMENT,
@@ -30,6 +32,12 @@ enum TokenType {
     AS_BANG,
     ASYNC_KEYWORD,
     CUSTOM_OPERATOR,
+    HASH_SYMBOL,
+    DIRECTIVE_IF,
+    DIRECTIVE_ELSEIF,
+    DIRECTIVE_ELSE,
+    DIRECTIVE_ENDIF,
+    FAKE_TRY_BANG
 };
 
 #define OPERATOR_COUNT 20
@@ -110,6 +118,29 @@ const enum TokenType OP_SYMBOLS[OPERATOR_COUNT] = {
     ASYNC_KEYWORD
 };
 
+const uint64_t OP_SYMBOL_SUPPRESSOR[OPERATOR_COUNT] = {
+    0, // ARROW_OPERATOR,
+    0, // DOT_OPERATOR,
+    0, // CONJUNCTION_OPERATOR,
+    0, // DISJUNCTION_OPERATOR,
+    0, // NIL_COALESCING_OPERATOR,
+    0, // EQUAL_SIGN,
+    0, // EQ_EQ,
+    0, // PLUS_THEN_WS,
+    0, // MINUS_THEN_WS,
+    1UL << FAKE_TRY_BANG, // BANG,
+        0, // THROWS_KEYWORD,
+        0, // RETHROWS_KEYWORD,
+        0, // DEFAULT_KEYWORD,
+        0, // WHERE_KEYWORD,
+        0, // ELSE_KEYWORD,
+        0, // CATCH_KEYWORD,
+        0, // AS_KEYWORD,
+        0, // AS_QUEST,
+        0, // AS_BANG,
+        0, // ASYNC_KEYWORD
+};
+
 #define RESERVED_OP_COUNT 31
 
 const char* RESERVED_OPS[RESERVED_OP_COUNT] = {
@@ -146,7 +177,7 @@ const char* RESERVED_OPS[RESERVED_OP_COUNT] = {
     "..<"
 };
 
-bool is_cross_semi_token(enum TokenType op) {
+static bool is_cross_semi_token(enum TokenType op) {
     switch(op) {
     case ARROW_OPERATOR:
     case DOT_OPERATOR:
@@ -474,6 +505,22 @@ static bool eat_operators(
     }
 
     if (full_match != -1) {
+        // We have a match -- first see if that match has a symbol that suppresses it. For example, in `try!`, we do not
+        // want to emit the `!` as a symbol in our scanner, because we want the parser to have the chance to parse it as
+        // an immediate token.
+        uint64_t suppressing_symbols = OP_SYMBOL_SUPPRESSOR[full_match];
+        if (suppressing_symbols) {
+            for (uint64_t suppressor = 0; suppressor < TOKEN_COUNT; suppressor++) {
+                if (!(suppressing_symbols & 1 << suppressor)) {
+                    continue;
+                }
+
+                // The suppressing symbol is valid in this position, so skip it.
+                if (valid_symbols[suppressor]) {
+                    return false;
+                }
+            }
+        }
         *symbol_result = OP_SYMBOLS[full_match];
         return true;
     }
@@ -655,6 +702,70 @@ static enum ParseDirective eat_whitespace(
     return CONTINUE_PARSING_NOTHING_FOUND;
 }
 
+#define DIRECTIVE_COUNT 4
+const char* DIRECTIVES[OPERATOR_COUNT] = {
+    "if",
+    "elseif",
+    "else",
+    "endif"
+};
+
+const enum TokenType DIRECTIVE_SYMBOLS[DIRECTIVE_COUNT] = {
+    DIRECTIVE_IF,
+    DIRECTIVE_ELSEIF,
+    DIRECTIVE_ELSE,
+    DIRECTIVE_ENDIF
+};
+
+static enum TokenType find_possible_compiler_directive(TSLexer *lexer) {
+    bool possible_directives[DIRECTIVE_COUNT];
+    for (int dir_idx = 0; dir_idx < DIRECTIVE_COUNT; dir_idx++) {
+        possible_directives[dir_idx] = true;
+    }
+
+    int32_t str_idx = 0;
+    int32_t full_match = -1;
+    while(true) {
+        for (int dir_idx = 0; dir_idx < DIRECTIVE_COUNT; dir_idx++) {
+            if (!possible_directives[dir_idx]) {
+                continue;
+            }
+
+            uint8_t expected_char = DIRECTIVES[dir_idx][str_idx];
+            if (expected_char == '\0') {
+                full_match = dir_idx;
+                lexer->mark_end(lexer);
+            }
+
+            if (expected_char != lexer->lookahead) {
+                possible_directives[dir_idx] = false;
+                continue;
+            }
+        }
+
+        uint8_t match_count = 0;
+        for (int dir_idx = 0; dir_idx < DIRECTIVE_COUNT; dir_idx += 1) {
+            if (possible_directives[dir_idx]) {
+                match_count += 1;
+            }
+        }
+
+        if (match_count == 0) {
+            break;
+        }
+
+        lexer->advance(lexer, false);
+        str_idx += 1;
+    }
+
+    if (full_match == -1) {
+        // No compiler directive found, so just match the starting symbol
+        return HASH_SYMBOL;
+    }
+
+    return DIRECTIVE_SYMBOLS[full_match];
+}
+
 static bool eat_raw_str_part(
     struct ScannerState *state,
     TSLexer *lexer,
@@ -677,6 +788,10 @@ static bool eat_raw_str_part(
 
         if (lexer->lookahead == '"') {
             advance(lexer);
+        } else if (hash_count == 1) {
+            lexer->mark_end(lexer);
+            *symbol_result = find_possible_compiler_directive(lexer);
+            return true;
         } else {
             return false;
         }
